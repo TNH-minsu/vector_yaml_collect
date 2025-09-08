@@ -2,133 +2,95 @@ sources:
   nginx_logs:
     type: file
     include:
-      - /var/log/nginx/access.log
-    # read_from: end  # 파일 끝에서부터 읽기 시작
+      - "${NGINX_LOG_PATH:-/var/log/nginx/access.log}"
 
 transforms:
-  parse_nginx_logs:
+  # 1) 통합 파싱 + 에러 분류
+  parse_and_classify_errors:
     inputs:
-      - "nginx_logs"
-    type: "remap"
+      - nginx_logs
+    type: remap
     source: |
-      # 1) message 필드를 regex로 파싱해서 named group으로 가져오기
+      # 파싱
       . = parse_regex!(
-      string!(.message),
-          r'^(?P<remote_addr>\S+) - (?P<remote_user>\S+) \[(?P<time_local>[^\]]+)\] "(?P<request>[^"]+)" (?P<status>\d+) (?P<body_bytes_sent>\d+) "(?P<http_referer>[^"]*)" "(?P<http_user_agent>[^"]*)" "(?P<http_x_forwarded_for>[^"]*)" "(?P<request_time>[^"]*)" "(?P<http_x_request_id>[^"]*)" "(?P<http_x_cluster>[^"]*)" "(?P<http_x_cluster_dbuser>[^"]*)" "(?P<target_backend>[^"]*)"$'
+        string!(.message),
+        r'^(?P<remote_addr>\S+) - (?P<remote_user>\S+) \[(?P<time_local>[^\]]+)\] "(?P<request>[^"]+)" (?P<status>\d+) (?P<body_bytes_sent>\d+) "(?P<http_referer>[^"]*)" "(?P<http_user_agent>[^"]*)" "(?P<http_x_forwarded_for>[^"]*)" "(?P<request_time>[^"]*)" "(?P<http_x_request_id>[^"]*)" "(?P<http_x_cluster>[^"]*)" "(?P<http_x_cluster_dbuser>[^"]*)" "(?P<target_backend>[^"]*)"$'
       )
 
-      # 2. 숫자 타입으로 변환
-      .status                = to_int!(.status)
-      .body_bytes_sent       = to_int!(.body_bytes_sent)
-      .request_time          = to_float!(.request_time)
+      # 타입 변환
+      .status = to_int!(.status)
+      .body_bytes_sent = to_int!(.body_bytes_sent)
+      .request_time = to_float!(.request_time)
       
-      # if exists(.tags) == false {
-      #   .tags = {}
-      # }
+      # 에러 분류 및 필터링
+      if .status == 499 {
+        .error_type = "client_timeout"
+        .error_class = "499"
+        .alert_threshold = 5
+      } else if .status >= 500 && .status <= 599 {
+        .error_type = "server_error" 
+        .error_class = "5xx"
+        .alert_threshold = 10
+      } else {
+        # 에러가 아닌 로그는 버림
+        abort
+      }
 
-      # .tags.target_backend = .target_backend
-
-  # 2-1) 5xx 에러만 필터링
-  filter_5xx_errors:
-    type: filter
-    inputs:
-      - parse_nginx_logs
-    condition: |
-      status = to_int!(.status)
-      status >= 500 && status <= 599
-
-  # 2-2) 499 에러만 필터링
-  filter_499_errors:
-    type: filter
-    inputs:
-      - parse_nginx_logs
-    condition: |
-      status = to_int!(.status)
-      status == 499
-
-  # 2) 5xx 에러 메트릭으로 변환
-  errors_5xx_to_metrics:
+  # 2) 통합 메트릭 생성
+  unified_error_metrics:
     type: log_to_metric
     inputs:
-      - filter_5xx_errors
+      - parse_and_classify_errors
     metrics:
       - type: counter
         field: "status"
-        name: "nginx_http_5xx"
+        name: "nginx_errors"
         tags:
-          target_backend: "{{ .target_backend }}"
-          status: "5xx"
+          error_type: "{{ .error_type }}"
+          error_class: "{{ .error_class }}"
+          backend: "{{ .target_backend }}"
 
-  # 499 에러 메트릭으로 변환  
-  errors_499_to_metrics:
-    type: log_to_metric
-    inputs:
-      - filter_499_errors
-    metrics:
-      - type: counter
-        field: "status"
-        name: "nginx_http_499"
-        tags:
-          target_backend: "{{ .target_backend }}"
-          status: "499"
-
-  # 5xx 에러 집계
-  errors_5xx_agg:
+  # 3) 메트릭 집계
+  error_aggregation:
     type: aggregate
     inputs:
-      - errors_5xx_to_metrics
-    interval_ms: 30000   # 30초 마다 flush
-    mode: Sum            # incremental metrics 합산
+      - unified_error_metrics
+    interval_ms: "${AGGREGATION_INTERVAL_MS:-30000}"
 
-  metric_to_log_5xx_agg:
+  # 4) 메트릭을 로그로 변환
+  metrics_to_logs:
     type: metric_to_log
-    inputs: [errors_5xx_agg]
-
-  # 499 에러 집계
-  errors_499_agg:
-    type: aggregate
-    inputs:
-      - errors_499_to_metrics
-    interval_ms: 30000   # 30초 마다 flush
-    mode: Sum            # incremental metrics 합산
-
-  metric_to_log_499_agg:
-    type: metric_to_log
-    inputs: [errors_499_agg]
-
-  # debug_with_metric:
-  #   type: remap
-  #   inputs: [metric_to_log]
-  #   source: |
-  #     log("METRIC EVENT: " + encode_json(.))
-
-  # 5xx 에러 알림
-  alert_5xx_log:
-    type: filter
-    inputs:
-      - metric_to_log_5xx_agg
-    condition: |
-      .name == "nginx_http_5xx" && to_int!(.counter.value) >= 10
-
-  # 499 에러 알림  
-  alert_499_log:
-    type: filter
-    inputs:
-      - metric_to_log_499_agg
-    condition: |
-      .name == "nginx_http_499" && to_int!(.counter.value) >= 5
-
-  wrap_slack_payload:
-    type: remap
     inputs: 
-      - alert_5xx_log
-      - alert_499_log
+      - error_aggregation
+
+  # 5) 알림 조건 필터링
+  alert_filter:
+    type: filter
+    inputs:
+      - metrics_to_logs
+    condition: |
+      threshold_499 = to_int!(get_env_var("ALERT_499_THRESHOLD") ?? "5")
+      threshold_5xx = to_int!(get_env_var("ALERT_5XX_THRESHOLD") ?? "10")
+      (.name == "nginx_errors") && ((.tags.error_type == "client_timeout" && to_int!(.counter.value) >= threshold_499) || (.tags.error_type == "server_error" && to_int!(.counter.value) >= threshold_5xx))
+
+  # 6) 알림 메시지 포맷팅
+  format_alert_message:
+    type: remap
+    inputs:
+      - alert_filter
     source: |
-      backend_full = to_string!(.tags.target_backend)
+      backend_full = to_string!(.tags.backend)
       backend = replace(backend_full, r'backend(\d+)', "$$1")
       count = to_string(to_int!(.counter.value))
-      status = to_string!(.tags.status)
-      message_text = "TEST!!!!!!!!!!!!!!!⚠️ Vector 알림: [g1] [*vc33-" + backend + "*] was1 (192.168.20.61)] 30초 사이에 구조에 " + count + "개의 " + status + " 에러가 발생했습니다."
+      error_class = to_string!(.tags.error_class)
+      
+      cluster_group = get_env_var("CLUSTER_GROUP") ?? "g1"
+      cluster_prefix = get_env_var("CLUSTER_PREFIX") ?? "vc33"
+      server_type = get_env_var("SERVER_TYPE") ?? "was1"
+      server_ip = get_env_var("SERVER_IP") ?? "192.168.20.61"
+      interval_sec = to_int!(get_env_var("AGGREGATION_INTERVAL_MS") ?? "30000") / 1000
+      
+      message_text = "⚠️ Vector 알림: [" + cluster_group + "] [*" + cluster_prefix + "-" + backend + "*] " + server_type + " (" + server_ip + ")] " + to_string!(interval_sec) + "초 사이에 " + count + "개의 " + error_class + " 에러가 발생했습니다."
 
       . = { 
         "message": {
@@ -138,32 +100,26 @@ transforms:
       }
 
 sinks:
-  debug_parse_nginx_logs:
+  # 디버그 출력
+  debug_errors:
     type: console
     inputs:
-      - errors_5xx_to_metrics
-      # - filter_5xx_errors
-      # - errors_5xx_to_metrics
-      # - errors_499_to_metrics
+      - alert_filter
     encoding:
       codec: json
 
-  slack_alert_simple:
+  # Slack 알림
+  slack_alert:
     type: http
-    inputs: [wrap_slack_payload]
-    # uri: "https://hooks.slack.com/services/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" # monit-alram
-    uri: "https://hooks.slack.com/services/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" # sms-test
-    # uri: "http://localhost:8000/log"
+    inputs: 
+      - format_alert_message
+    uri: "${SLACK_WEBHOOK_URL:-https://hooks.slack.com/services/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}"
     method: post
-
     encoding:
       codec: text
-
-    # 요청을 1개씩 보내기
     batch:
       timeout_secs: 1
       max_events: 1
-
     request:
       headers:
         Content-Type: "application/json"
