@@ -55,7 +55,7 @@ transforms:
     type: aggregate
     inputs:
       - unified_error_metrics
-    interval_ms: "${AGGREGATION_INTERVAL_MS:-30000}"
+    interval_ms: 30000
 
   # 4) 메트릭을 로그로 변환
   metrics_to_logs:
@@ -69,8 +69,8 @@ transforms:
     inputs:
       - metrics_to_logs
     condition: |
-      threshold_499 = to_int!(get_env_var("ALERT_499_THRESHOLD") ?? "5")
-      threshold_5xx = to_int!(get_env_var("ALERT_5XX_THRESHOLD") ?? "10")
+      threshold_499 = to_int!("${ALERT_499_THRESHOLD:-5}")
+      threshold_5xx = to_int!("${ALERT_5XX_THRESHOLD:-10}")
       (.name == "nginx_errors") && ((.tags.error_type == "client_timeout" && to_int!(.counter.value) >= threshold_499) || (.tags.error_type == "server_error" && to_int!(.counter.value) >= threshold_5xx))
 
   # 6) 알림 메시지 포맷팅
@@ -84,13 +84,13 @@ transforms:
       count = to_string(to_int!(.counter.value))
       error_class = to_string!(.tags.error_class)
       
-      cluster_group = get_env_var("CLUSTER_GROUP") ?? "g1"
-      cluster_prefix = get_env_var("CLUSTER_PREFIX") ?? "vc33"
-      server_type = get_env_var("SERVER_TYPE") ?? "was1"
-      server_ip = get_env_var("SERVER_IP") ?? "192.168.20.61"
-      interval_sec = to_int!(get_env_var("AGGREGATION_INTERVAL_MS") ?? "30000") / 1000
+      cluster_group = "${CLUSTER_GROUP:-g1}"
+      cluster_prefix = "${CLUSTER_PREFIX:-vc33}"
+      server_type = "${SERVER_TYPE:-was1}"
+      server_ip = "${SERVER_IP:-192.168.20.61}"
+      interval_sec = to_int!("${AGGREGATION_INTERVAL_MS:-30000}") / 1000
       
-      message_text = "⚠️ Vector 알림: [" + cluster_group + "] [*" + cluster_prefix + "-" + backend + "*] " + server_type + " (" + server_ip + ")] " + to_string!(interval_sec) + "초 사이에 " + count + "개의 " + error_class + " 에러가 발생했습니다."
+      message_text = "⚠️ Vector 알림: [" + cluster_group + "] [*" + cluster_prefix + "-" + backend + "*] " + server_type + " (" + server_ip + ")] " + to_string(interval_sec) + "초 사이에 " + count + "개의 " + error_class + " 에러가 발생했습니다."
 
       . = { 
         "message": {
@@ -100,20 +100,20 @@ transforms:
       }
 
 sinks:
-  # 디버그 출력
-  debug_errors:
+  # 디버그 출력 - 알림 확인용
+  debug_alerts:
     type: console
     inputs:
-      - alert_filter
+      - format_alert_message
     encoding:
       codec: json
 
-  # Slack 알림
+  # Slack 알림 (현재 비활성화 - URL 문제로)
   slack_alert:
     type: http
     inputs: 
       - format_alert_message
-    uri: "${SLACK_WEBHOOK_URL:-https://hooks.slack.com/services/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}"
+    uri: "${SLACK_WEBHOOK_URL:-https://hooks.slack.com/services/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}"
     method: post
     encoding:
       codec: text
