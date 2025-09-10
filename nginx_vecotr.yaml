@@ -183,7 +183,7 @@ sinks:
     type: http
     inputs: 
       - format_slack_message
-    uri: "${SLACK_WEBHOOK_URL:-https://hooks.slack.com/services/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}"
+    uri: "${SLACK_WEBHOOK_URL:-SLACK_WEBHOOK_URL}"
     method: post
     encoding:
       codec: text
