@@ -109,9 +109,9 @@ transforms:
       hostname_parsed = parse_regex(.server_hostname, r'^(?P<cluster_prefix>[^-]+)-(?P<cluster_group>[^-]+)-(?P<server_type>.+)$') ?? {}
       
       # 파싱 성공 여부에 따라 설정
-      .cluster_prefix = if exists(hostname_parsed.cluster_prefix) { hostname_parsed.cluster_prefix } else { "${CLUSTER_PREFIX:-vc33}" }
-      .cluster_group = if exists(hostname_parsed.cluster_group) { hostname_parsed.cluster_group } else { "${CLUSTER_GROUP:-g1}" }
-      .server_type = if exists(hostname_parsed.server_type) { hostname_parsed.server_type } else { "${SERVER_TYPE:-was1}" }
+      .cluster_prefix = if exists(hostname_parsed.cluster_prefix) { hostname_parsed.cluster_prefix } else { "${CLUSTER_PREFIX:-missing}" }
+      .cluster_group = if exists(hostname_parsed.cluster_group) { hostname_parsed.cluster_group } else { "${CLUSTER_GROUP:-missing}" }
+      .server_type = if exists(hostname_parsed.server_type) { hostname_parsed.server_type } else { "${SERVER_TYPE:-missing}" }
       .server_ip = get_env_var("SERVER_IP") ?? .server_hostname
       .interval_sec = to_int!("${AGGREGATION_INTERVAL_MS:-30000}") / 1000
       
