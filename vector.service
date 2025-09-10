@@ -1,0 +1,27 @@
+[Unit]
+Description=Vector log/metric router
+Documentation=https://vector.dev
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=vector
+Group=vector
+ExecStart=/usr/bin/vector --config /etc/vector/vector.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+
+# .env 파일에서 환경변수 로드 (파일이 없어도 에러 안남)
+EnvironmentFile=-/etc/vector/.env
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vector
+
+
+ReadWritePaths=/var/log/vector /var/lib/vector /tmp
+
+[Install]
+WantedBy=multi-user.target
